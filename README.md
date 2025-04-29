@@ -1,6 +1,6 @@
 # Twitter Diary Plugin
 
-Obsidian plugin that pulls tweets from (my) twitter data archive to display in your obsidian journal
+Obsidian plugin that pulls tweets from (my) twitter data archive to display in (my) obsidian journal
 
 ## Setup
 
