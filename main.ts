@@ -52,6 +52,24 @@ export default class TwitterDiaryPlugin extends Plugin {
 		return a.test(filePath) || b.test(filePath);
 	}
 
+	isDuringDST(date: Date) {
+		// TODO: make it return TRUE if date is after this bill passes:
+		// TODO: let users pick timezone
+		// https://www.congress.gov/bill/119th-congress/house-bill/139
+		
+		let early = new Date(date.getFullYear(), 0, 1).getTimezoneOffset();
+		let middle = new Date(date.getFullYear(), 6, 1).getTimezoneOffset();
+		return Math.max(early, middle) !== date.getTimezoneOffset();
+	}
+
+	toESTDateString(timestamp: string) {
+		const date = new Date(timestamp);
+		const estOffset = (-4 - (this.isDuringDST(date) ? 1 : 0)) * 60;
+		const estDate = new Date(date.getTime() + (estOffset * 60 * 1000));
+		return estDate.toISOString().split('T')[0];
+	}
+
+
 	/**
 	 * Returns the folder name for a specific date, finding the most recent folder on or before the given date
 	 */
@@ -235,8 +253,8 @@ export default class TwitterDiaryPlugin extends Plugin {
 					let tweetText = tweet.text;
 					tweetText = tweetText.replace(/#(\w+)/g, '<span style="color: #1DA1F2; font-weight: 500;">#$1</span>');
 					tweetText = tweetText.replace(/@(\w+)/g, '<span style="color: #1DA1F2; font-weight: 500;">@$1</span>');
-
-
+					tweetText = tweetText.replace(/[\u200B]+([A-Za-z0-9+/=]+)[\u200B]+/g, (match, content) => {try {return Buffer.from(content, "base64").toString("utf8");} catch (e) {return content;}});
+					
 					// urls
 					const mediaUrlRegex = /https:\/\/t\.co\/\w+/g;
 					const mediaUrls = tweet.text.match(mediaUrlRegex) || [];
@@ -477,7 +495,7 @@ export default class TwitterDiaryPlugin extends Plugin {
 					element.appendChild(tweetContainer);
 				}
 				if (tweets.length == 0) {
-					new Notice("No tweets today!");
+					// new Notice("No tweets today!");
 				}
 			}
 		} catch (error) {
@@ -504,7 +522,7 @@ export default class TwitterDiaryPlugin extends Plugin {
 
 			return tweets
 				.filter((tweet: any) => {
-					const current = ((new Date(tweet.tweet.created_at)).toISOString().split('T')[0] === dateString);
+					const current = (this.toESTDateString(tweet.tweet.created_at) === dateString);
 					const notInReply = (tweet.tweet["in_reply_to_status_id"] == null);
 					const retweeted = (tweet.tweet['full_text'] && tweet.tweet['full_text'].startsWith("RT @"));
 					const quotingATweet = tweet.tweet.entities &&
@@ -540,9 +558,22 @@ export default class TwitterDiaryPlugin extends Plugin {
 							}
 						});
 					}
-
+					
+					let content = tweetObj.full_text;
+					tweetObj.entities.urls.forEach((url: {expanded_url: string | string[]; url: string}) => {
+						// Replace t.co URL with expanded URL and style it
+						const shortUrl = url.url; // The t.co URL in the tweet text
+						const expandedUrl = Array.isArray(url.expanded_url) ? url.expanded_url[0] : url.expanded_url;
+						
+						content = content.replace(
+							shortUrl, 
+							// lol this is so dumb. i base64 the url and wrap it in a zwsp
+							`​${Buffer.from(`<a href="${expandedUrl}" style="color: #1DA1F2; font-weight: 500; text-decoration: none;">${expandedUrl}</a>`).toString('base64')}​`
+						);
+					});
+					
 					return {
-						text: tweetObj.full_text,
+						text: content,
 						timestamp: tweetObj.created_at,
 						likes: parseInt(tweetObj.favorite_count) || 0,
 						retweets: parseInt(tweetObj.retweet_count) || 0,
