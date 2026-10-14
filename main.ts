@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { TFolder, TFile } from 'obsidian';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -198,6 +198,63 @@ export default class TwitterDiaryPlugin extends Plugin {
 				return "cannotfindhandle";
 			}
 		}
+	}
+
+	/**
+	 * All snapshot folders (YYYY-MM-DD), oldest first
+	 */
+	getSnapshotFolders(): string[] {
+		const baseFolder = this.app.vault.getAbstractFileByPath(this.settings.metadataPath);
+		if (!baseFolder || !(baseFolder instanceof TFolder)) return [];
+		return baseFolder.children
+			.filter(file => file instanceof TFolder)
+			.map(folder => folder.name)
+			.filter(name => /^\d{4}-\d{2}-\d{2}$/.test(name))
+			.sort();
+	}
+
+	/**
+	 * Reads a snapshot note: line 1 name, line 2 handle, then optional `key: value` lines
+	 * (bio, location, link, joined, following, followers, posts)
+	 */
+	async readSnapshotNote(mdPath: string): Promise<{ name?: string, handle?: string, fields: Record<string, string> }> {
+		if (!(await this.app.vault.adapter.exists(mdPath))) return { fields: {} };
+		const lines = (await this.app.vault.adapter.read(mdPath)).split('\n');
+		const fields: Record<string, string> = {};
+		for (const line of lines.slice(2)) {
+			const m = line.match(/^([a-z]+):\s*(.*)$/);
+			if (m) fields[m[1]] = m[2].trim();
+		}
+		return { name: lines[0]?.trim() || undefined, handle: lines[1]?.trim() || undefined, fields };
+	}
+
+	async findImage(folder: string, name: string): Promise<string | null> {
+		for (const ext of ["jpg", "jpeg", "webp", "png"]) {
+			const p = `${folder}/${name}.${ext}`;
+			const file = this.app.vault.getAbstractFileByPath(p);
+			if (file instanceof TFile) return this.app.vault.getResourcePath(file);
+		}
+		return null;
+	}
+
+	/**
+	 * Profile as of a snapshot folder. Missing pieces fall back to later snapshots, then Twitter.md.
+	 */
+	async getProfile(folder: string) {
+		const folders = this.getSnapshotFolders();
+		const root = this.settings.metadataPath;
+		const chain = [...folders.slice(folders.indexOf(folder)).map(f => `${root}/${f}`), root];
+		const profile: any = { folder, fields: {} };
+		for (const dir of chain) {
+			const note = await this.readSnapshotNote(dir === root ? `${root}/Twitter.md` : `${dir}/${dir.split('/').pop()}.md`);
+			profile.name ??= note.name;
+			profile.handle ??= note.handle;
+			profile.fields = { ...note.fields, ...profile.fields };
+			profile.avatar ??= await this.findImage(dir, 'avatar');
+			// a banner only counts for its own snapshot: an empty header is truer than a wrong one
+			if (dir === `${root}/${folder}`) profile.banner = await this.findImage(dir, 'banner');
+		}
+		return profile;
 	}
 
 	async injectTwitterContent(element: HTMLElement, filePath: string) {
@@ -586,6 +643,65 @@ export default class TwitterDiaryPlugin extends Plugin {
 			console.error('Error fetching tweets:', error);
 			return [];
 		}
+	}
+}
+
+class ProfileModal extends Modal {
+	constructor(app: App, private plugin: TwitterDiaryPlugin, private folder: string) {
+		super(app);
+	}
+
+	async onOpen() {
+		this.modalEl.addClass('twitter-profile-modal');
+		await this.render();
+	}
+
+	async render() {
+		const { contentEl } = this;
+		contentEl.empty();
+		const p = await this.plugin.getProfile(this.folder);
+		const folders = this.plugin.getSnapshotFolders();
+		const i = folders.indexOf(this.folder);
+
+		const nav = contentEl.createDiv({ cls: 'tp-nav' });
+		const prev = nav.createEl('button', { text: '‹', attr: { 'aria-label': 'Earlier snapshot' } });
+		nav.createSpan({ cls: 'tp-date', text: `as of ${new Date(this.folder + 'T12:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}` });
+		const next = nav.createEl('button', { text: '›', attr: { 'aria-label': 'Later snapshot' } });
+		prev.disabled = i <= 0;
+		next.disabled = i >= folders.length - 1;
+		prev.onclick = () => { this.folder = folders[i - 1]; this.render(); };
+		next.onclick = () => { this.folder = folders[i + 1]; this.render(); };
+
+		const banner = contentEl.createDiv({ cls: 'tp-banner' });
+		if (p.banner) banner.style.backgroundImage = `url("${p.banner}")`;
+
+		const head = contentEl.createDiv({ cls: 'tp-head' });
+		if (p.avatar) head.createEl('img', { cls: 'tp-avatar', attr: { src: p.avatar } });
+
+		const body = contentEl.createDiv({ cls: 'tp-body' });
+		body.createDiv({ cls: 'tp-name', text: p.name ?? '' });
+		body.createDiv({ cls: 'tp-handle', text: p.handle ? '@' + p.handle : '' });
+		if (p.fields.bio) body.createDiv({ cls: 'tp-bio', text: p.fields.bio });
+
+		const meta = body.createDiv({ cls: 'tp-meta' });
+		if (p.fields.location) meta.createSpan({ text: '📍 ' + p.fields.location });
+		if (p.fields.link) {
+			const a = meta.createEl('a', { text: '🔗 ' + p.fields.link, attr: { href: 'https://' + p.fields.link.replace(/^https?:\/\//, '') } });
+			a.target = '_blank';
+		}
+		if (p.fields.joined) meta.createSpan({ text: '🗓 Joined ' + p.fields.joined });
+
+		const counts = body.createDiv({ cls: 'tp-counts' });
+		for (const [k, label] of [['following', 'Following'], ['followers', 'Followers'], ['posts', 'posts']]) {
+			if (!p.fields[k]) continue;
+			const c = counts.createSpan();
+			c.createEl('b', { text: p.fields[k] });
+			c.appendText(' ' + label);
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }
 
