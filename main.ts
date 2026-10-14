@@ -36,13 +36,15 @@ export default class TwitterDiaryPlugin extends Plugin {
 		// Snapshot notes (<metadataPath>/<date>/<date>.md) read as the profile they describe.
 		// Edit mode still shows the raw lines.
 		this.registerMarkdownPostProcessor((element, context) => {
-			const m = context.sourcePath.match(new RegExp(`^${this.settings.metadataPath}/(\\d{4}-\\d{2}-\\d{2})/\\1\\.md$`));
-			if (!m) return;
+			const root = this.settings.metadataPath;
+			const m = context.sourcePath.match(new RegExp(`^${root}/(\\d{4}-\\d{2}-\\d{2})/\\1\\.md$`));
+			const isCurrent = context.sourcePath === `${root}/Twitter.md`;
+			if (!m && !isCurrent) return;
 			const info = context.getSectionInfo(element);
 			if (info && info.lineStart > 0) { element.empty(); return; }
 			const host = element.createDiv();
 			element.replaceChildren(host);
-			context.addChild(new ProfileCard(host, this, m[1], false));
+			context.addChild(new ProfileCard(host, this, isCurrent ? '' : m![1], false));
 		});
 
 		this.addSettingTab(new TwitterDiarySettingTab(this.app, this));
@@ -255,7 +257,10 @@ export default class TwitterDiaryPlugin extends Plugin {
 	async getProfile(folder: string) {
 		const folders = this.getSnapshotFolders();
 		const root = this.settings.metadataPath;
-		const chain = [...folders.slice(folders.indexOf(folder)).map(f => `${root}/${f}`), root];
+		// '' = current profile: Twitter.md first, images from the newest snapshot
+		const chain = folder
+			? [...folders.slice(folders.indexOf(folder)).map(f => `${root}/${f}`), root]
+			: [root, ...folders.slice().reverse().map(f => `${root}/${f}`)];
 		const profile: any = { folder, fields: {} };
 		for (const dir of chain) {
 			const note = await this.readSnapshotNote(dir === root ? `${root}/Twitter.md` : `${dir}/${dir.split('/').pop()}.md`);
@@ -265,6 +270,7 @@ export default class TwitterDiaryPlugin extends Plugin {
 			profile.avatar ??= await this.findImage(dir, 'avatar');
 			// a banner only counts for its own snapshot: an empty header is truer than a wrong one
 			if (dir === `${root}/${folder}`) profile.banner = await this.findImage(dir, 'banner');
+			if (!folder && dir !== root) profile.banner ??= await this.findImage(dir, 'banner');
 		}
 		return profile;
 	}
@@ -667,18 +673,20 @@ async function renderProfile(el: HTMLElement, plugin: TwitterDiaryPlugin, folder
 	el.addClass('twitter-profile');
 	const p = await plugin.getProfile(folder);
 	const folders = plugin.getSnapshotFolders();
-	const i = folders.indexOf(folder);
+	const i = folder ? folders.indexOf(folder) : folders.length; // current sits after the newest snapshot
 
 	const top = el.createDiv({ cls: 'tp-nav' });
-	const label = `as of ${new Date(folder + 'T12:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}`;
+	const label = folder
+		? `as of ${new Date(folder + 'T12:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}`
+		: 'current';
 	if (nav) {
 		const prev = top.createEl('button', { text: '‹', attr: { 'aria-label': 'Earlier snapshot' } });
 		top.createSpan({ cls: 'tp-date', text: label });
 		const next = top.createEl('button', { text: '›', attr: { 'aria-label': 'Later snapshot' } });
 		prev.disabled = i <= 0;
-		next.disabled = i >= folders.length - 1;
+		next.disabled = i >= folders.length;
 		prev.onclick = () => renderProfile(el, plugin, folders[i - 1], nav);
-		next.onclick = () => renderProfile(el, plugin, folders[i + 1], nav);
+		next.onclick = () => renderProfile(el, plugin, folders[i + 1] ?? '', nav);
 	} else {
 		top.createSpan({ cls: 'tp-date', text: label });
 	}
