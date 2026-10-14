@@ -5,6 +5,11 @@
 	overflow: hidden;
 }
 .twitter-profile-modal .modal-content { padding: 0; }
+/* In a snapshot note: a card, like the profile header on Twitter */
+.markdown-preview-view .twitter-profile {
+	max-width: 600px; margin: 0 auto; overflow: hidden;
+	border: 1px solid var(--background-modifier-border); border-radius: 12px;
+}
 .twitter-profile-modal .modal-close-button { z-index: 2; color: #fff; text-shadow: 0 0 4px rgb(0 0 0 / .6); }
 .tp-nav {
 	display: flex; align-items: center; justify-content: center; gap: 12px;

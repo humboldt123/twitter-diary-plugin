@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, MarkdownRenderChild, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { TFolder, TFile } from 'obsidian';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -31,6 +31,18 @@ export default class TwitterDiaryPlugin extends Plugin {
 					this.injectTwitterContent(element, currentPath);
 				}
 			}
+		});
+
+		// Snapshot notes (<metadataPath>/<date>/<date>.md) read as the profile they describe.
+		// Edit mode still shows the raw lines.
+		this.registerMarkdownPostProcessor((element, context) => {
+			const m = context.sourcePath.match(new RegExp(`^${this.settings.metadataPath}/(\\d{4}-\\d{2}-\\d{2})/\\1\\.md$`));
+			if (!m) return;
+			const info = context.getSectionInfo(element);
+			if (info && info.lineStart > 0) { element.empty(); return; }
+			const host = element.createDiv();
+			element.replaceChildren(host);
+			context.addChild(new ProfileCard(host, this, m[1], false));
 		});
 
 		this.addSettingTab(new TwitterDiarySettingTab(this.app, this));
@@ -646,58 +658,76 @@ export default class TwitterDiaryPlugin extends Plugin {
 	}
 }
 
+/**
+ * Draws a Twitter/X-style profile for a snapshot folder into `el`.
+ * With `nav`, arrows step through snapshots in place.
+ */
+async function renderProfile(el: HTMLElement, plugin: TwitterDiaryPlugin, folder: string, nav: boolean) {
+	el.empty();
+	el.addClass('twitter-profile');
+	const p = await plugin.getProfile(folder);
+	const folders = plugin.getSnapshotFolders();
+	const i = folders.indexOf(folder);
+
+	const top = el.createDiv({ cls: 'tp-nav' });
+	const label = `as of ${new Date(folder + 'T12:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}`;
+	if (nav) {
+		const prev = top.createEl('button', { text: '‹', attr: { 'aria-label': 'Earlier snapshot' } });
+		top.createSpan({ cls: 'tp-date', text: label });
+		const next = top.createEl('button', { text: '›', attr: { 'aria-label': 'Later snapshot' } });
+		prev.disabled = i <= 0;
+		next.disabled = i >= folders.length - 1;
+		prev.onclick = () => renderProfile(el, plugin, folders[i - 1], nav);
+		next.onclick = () => renderProfile(el, plugin, folders[i + 1], nav);
+	} else {
+		top.createSpan({ cls: 'tp-date', text: label });
+	}
+
+	const banner = el.createDiv({ cls: 'tp-banner' });
+	if (p.banner) banner.style.backgroundImage = `url("${p.banner}")`;
+
+	const head = el.createDiv({ cls: 'tp-head' });
+	if (p.avatar) head.createEl('img', { cls: 'tp-avatar', attr: { src: p.avatar } });
+
+	const body = el.createDiv({ cls: 'tp-body' });
+	body.createDiv({ cls: 'tp-name', text: p.name ?? '' });
+	body.createDiv({ cls: 'tp-handle', text: p.handle ? '@' + p.handle : '' });
+	if (p.fields.bio) body.createDiv({ cls: 'tp-bio', text: p.fields.bio });
+
+	const meta = body.createDiv({ cls: 'tp-meta' });
+	if (p.fields.location) meta.createSpan({ text: '📍 ' + p.fields.location });
+	if (p.fields.link) {
+		const a = meta.createEl('a', { text: '🔗 ' + p.fields.link, attr: { href: 'https://' + p.fields.link.replace(/^https?:\/\//, '') } });
+		a.target = '_blank';
+	}
+	if (p.fields.joined) meta.createSpan({ text: '🗓 Joined ' + p.fields.joined });
+
+	const counts = body.createDiv({ cls: 'tp-counts' });
+	for (const [k, label] of [['following', 'Following'], ['followers', 'Followers'], ['posts', 'posts']]) {
+		if (!p.fields[k]) continue;
+		const c = counts.createSpan();
+		c.createEl('b', { text: p.fields[k] });
+		c.appendText(' ' + label);
+	}
+}
+
+class ProfileCard extends MarkdownRenderChild {
+	constructor(el: HTMLElement, private plugin: TwitterDiaryPlugin, private folder: string, private nav: boolean) {
+		super(el);
+	}
+	onload() {
+		renderProfile(this.containerEl, this.plugin, this.folder, this.nav);
+	}
+}
+
 class ProfileModal extends Modal {
 	constructor(app: App, private plugin: TwitterDiaryPlugin, private folder: string) {
 		super(app);
 	}
 
-	async onOpen() {
+	onOpen() {
 		this.modalEl.addClass('twitter-profile-modal');
-		await this.render();
-	}
-
-	async render() {
-		const { contentEl } = this;
-		contentEl.empty();
-		const p = await this.plugin.getProfile(this.folder);
-		const folders = this.plugin.getSnapshotFolders();
-		const i = folders.indexOf(this.folder);
-
-		const nav = contentEl.createDiv({ cls: 'tp-nav' });
-		const prev = nav.createEl('button', { text: '‹', attr: { 'aria-label': 'Earlier snapshot' } });
-		nav.createSpan({ cls: 'tp-date', text: `as of ${new Date(this.folder + 'T12:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}` });
-		const next = nav.createEl('button', { text: '›', attr: { 'aria-label': 'Later snapshot' } });
-		prev.disabled = i <= 0;
-		next.disabled = i >= folders.length - 1;
-		prev.onclick = () => { this.folder = folders[i - 1]; this.render(); };
-		next.onclick = () => { this.folder = folders[i + 1]; this.render(); };
-
-		const banner = contentEl.createDiv({ cls: 'tp-banner' });
-		if (p.banner) banner.style.backgroundImage = `url("${p.banner}")`;
-
-		const head = contentEl.createDiv({ cls: 'tp-head' });
-		if (p.avatar) head.createEl('img', { cls: 'tp-avatar', attr: { src: p.avatar } });
-
-		const body = contentEl.createDiv({ cls: 'tp-body' });
-		body.createDiv({ cls: 'tp-name', text: p.name ?? '' });
-		body.createDiv({ cls: 'tp-handle', text: p.handle ? '@' + p.handle : '' });
-		if (p.fields.bio) body.createDiv({ cls: 'tp-bio', text: p.fields.bio });
-
-		const meta = body.createDiv({ cls: 'tp-meta' });
-		if (p.fields.location) meta.createSpan({ text: '📍 ' + p.fields.location });
-		if (p.fields.link) {
-			const a = meta.createEl('a', { text: '🔗 ' + p.fields.link, attr: { href: 'https://' + p.fields.link.replace(/^https?:\/\//, '') } });
-			a.target = '_blank';
-		}
-		if (p.fields.joined) meta.createSpan({ text: '🗓 Joined ' + p.fields.joined });
-
-		const counts = body.createDiv({ cls: 'tp-counts' });
-		for (const [k, label] of [['following', 'Following'], ['followers', 'Followers'], ['posts', 'posts']]) {
-			if (!p.fields[k]) continue;
-			const c = counts.createSpan();
-			c.createEl('b', { text: p.fields[k] });
-			c.appendText(' ' + label);
-		}
+		renderProfile(this.contentEl, this.plugin, this.folder, true);
 	}
 
 	onClose() {
