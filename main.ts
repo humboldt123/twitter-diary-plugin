@@ -1,4 +1,4 @@
-import { App, MarkdownRenderChild, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, MarkdownRenderChild, Modal, Notice, Plugin, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import { TFolder, TFile } from 'obsidian';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -703,12 +703,17 @@ async function renderProfile(el: HTMLElement, plugin: TwitterDiaryPlugin, folder
 	if (p.fields.bio) body.createDiv({ cls: 'tp-bio', text: p.fields.bio });
 
 	const meta = body.createDiv({ cls: 'tp-meta' });
-	if (p.fields.location) meta.createSpan({ text: '📍 ' + p.fields.location });
+	const item = (icon: string, parent: HTMLElement = meta) => {
+		const span = parent.createSpan({ cls: 'tp-meta-item' });
+		setIcon(span.createSpan({ cls: 'tp-icon' }), icon);
+		return span;
+	};
+	if (p.fields.location) item('map-pin').appendText(p.fields.location);
 	if (p.fields.link) {
-		const a = meta.createEl('a', { text: '🔗 ' + p.fields.link, attr: { href: 'https://' + p.fields.link.replace(/^https?:\/\//, '') } });
+		const a = item('link').createEl('a', { text: p.fields.link, attr: { href: 'https://' + p.fields.link.replace(/^https?:\/\//, '') } });
 		a.target = '_blank';
 	}
-	if (p.fields.joined) meta.createSpan({ text: '🗓 Joined ' + p.fields.joined });
+	if (p.fields.joined) item('calendar-days').appendText('Joined ' + p.fields.joined);
 
 	const counts = body.createDiv({ cls: 'tp-counts' });
 	for (const [k, label] of [['following', 'Following'], ['followers', 'Followers'], ['posts', 'posts']]) {
