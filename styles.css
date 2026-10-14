@@ -20,11 +20,14 @@
 	aspect-ratio: 3 / 1;
 	background: var(--background-modifier-border) center / cover no-repeat;
 }
-.tp-head { height: 70px; padding: 0 16px; position: relative; }
+.tp-head { height: 70px; padding: 0 16px; position: relative; z-index: 1; }
 .tp-avatar {
 	position: absolute; top: -70px; left: 16px;
 	width: 134px; height: 134px; border-radius: 50%; object-fit: cover;
 	border: 4px solid var(--background-primary); background: var(--background-primary);
+	z-index: 1;
+	mix-blend-mode: normal !important; /* never blend into the banner behind it */
+	filter: none !important;
 }
 .tp-body { padding: 0 16px 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 .tp-name { font-size: 20px; font-weight: 800; line-height: 1.2; }
