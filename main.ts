@@ -47,7 +47,30 @@ export default class TwitterDiaryPlugin extends Plugin {
 			context.addChild(new ProfileCard(host, this, isCurrent ? '' : m![1], false));
 		});
 
+		// New daily logs made by the core Daily Notes button arrive with raw Templater tags
+		// (<% ... %>) unless Templater's per-device "trigger on file creation" is on.
+		// Run Templater on them ourselves so the template always applies.
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(this.app.vault.on('create', (file) => {
+				if (file instanceof TFile && this.isDailyLogNote(file.path)) this.applyTemplater(file);
+			}));
+		});
+
 		this.addSettingTab(new TwitterDiarySettingTab(this.app, this));
+	}
+
+	async applyTemplater(file: TFile) {
+		// Daily Notes writes the template just after creating the file; Templater's own trigger
+		// (if enabled) runs ~300ms later. Wait past both, then only act if tags are still there.
+		await new Promise(r => setTimeout(r, 1200));
+		const text = await this.app.vault.read(file);
+		if (!text.includes('<%')) return;
+		const templater = (this.app as any).plugins?.plugins?.['templater-obsidian']?.templater;
+		if (!templater?.overwrite_file_commands) {
+			new Notice('Twitter Diary: Templater is not enabled, so the log template was not applied');
+			return;
+		}
+		await templater.overwrite_file_commands(file);
 	}
 
 	onunload() {}
