@@ -1,4 +1,4 @@
-import { App, MarkdownRenderChild, Modal, Notice, Plugin, PluginSettingTab, Setting, setIcon } from 'obsidian';
+import { App, MarkdownRenderChild, Modal, Notice, Plugin, PluginSettingTab, Setting, requestUrl, setIcon } from 'obsidian';
 import { TFolder, TFile } from 'obsidian';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -55,6 +55,10 @@ export default class TwitterDiaryPlugin extends Plugin {
 				if (file instanceof TFile && this.isDailyLogNote(file.path)) this.applyTemplater(file);
 			}));
 		});
+
+		// ```tweet with one tweet URL per line: cards fetched live from X's public embed
+		// endpoint, so nothing (text, avatar) is stored in the vault.
+		this.registerMarkdownCodeBlockProcessor('tweet', (source, el) => renderTweetBlock(el, source));
 
 		this.addSettingTab(new TwitterDiarySettingTab(this.app, this));
 	}
@@ -817,5 +821,126 @@ class TwitterDiarySettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+	}
+}
+// ─── Embedded tweets (```tweet blocks) ───────────────────────────────
+
+interface EmbedTweet {
+	id_str: string;
+	text: string;
+	created_at: string;
+	display_text_range?: [number, number];
+	favorite_count?: number;
+	conversation_count?: number;
+	note_tweet?: unknown;
+	user: { name: string; screen_name: string };
+	entities?: { urls?: { url: string; expanded_url: string; display_url: string }[]; media?: { url: string }[] };
+	photos?: { url: string; width: number; height: number }[];
+	quoted_tweet?: EmbedTweet;
+}
+
+const tweetCache = new Map<string, Promise<EmbedTweet>>();
+
+/** The same token X's own embed script sends. */
+function syndicationToken(id: string): string {
+	return ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+}
+
+function fetchTweet(id: string): Promise<EmbedTweet> {
+	if (!tweetCache.has(id)) {
+		const p = requestUrl({ url: `https://cdn.syndication.twimg.com/tweet-result?id=${id}&lang=en&token=${syndicationToken(id)}` })
+			.then(r => {
+				if (!r.json?.user) throw new Error('not available');
+				return r.json as EmbedTweet;
+			});
+		p.catch(() => tweetCache.delete(id));
+		tweetCache.set(id, p);
+	}
+	return tweetCache.get(id)!;
+}
+
+function tweetHTML(t: EmbedTweet): string {
+	const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	const [a, b] = t.display_text_range ?? [0, t.text.length];
+	// X sends &, < and > already escaped; undo that before escaping once.
+	const raw = [...t.text].slice(a, b).join('').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+	let text = esc(raw);
+	for (const u of t.entities?.urls ?? []) {
+		text = text.replace(u.url, `<a href="${esc(u.expanded_url)}">${esc(u.display_url)}</a>`);
+	}
+	text = text.replace(/https:\/\/t\.co\/\w+/g, '').trim();
+	text = text.replace(/(^|[^\w])@(\w+)/g, '$1<a href="https://x.com/$2">@$2</a>');
+	text = text.replace(/(^|[^\w&])#(\w+)/g, '$1<a href="https://x.com/hashtag/$2">#$2</a>');
+	return text;
+}
+
+function header(el: HTMLElement, t: EmbedTweet, small: boolean) {
+	const head = el.createDiv({ cls: 'tw-embed-head' });
+	// No avatar image: a letter in a circle, so nothing of theirs is downloaded.
+	const letter = head.createDiv({ cls: 'tw-embed-avatar', text: (t.user.screen_name[0] ?? '?').toUpperCase() });
+	let h = 0;
+	for (const c of t.user.screen_name) h = (h * 31 + c.charCodeAt(0)) % 360;
+	letter.style.background = `hsl(${h} 45% 55%)`;
+	if (small) letter.addClass('is-small');
+	const who = head.createDiv({ cls: 'tw-embed-who' });
+	who.createSpan({ cls: 'tw-embed-name', text: t.user.name });
+	who.createSpan({ cls: 'tw-embed-handle', text: '@' + t.user.screen_name });
+	if (small) {
+		const date = new Date(t.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+		who.createSpan({ cls: 'tw-embed-handle', text: '· ' + date });
+	}
+}
+
+function renderTweet(card: HTMLElement, t: EmbedTweet, url: string) {
+	card.empty();
+	header(card, t, false);
+	const body = card.createDiv({ cls: 'tw-embed-text' });
+	body.innerHTML = tweetHTML(t) + (t.note_tweet ? '…' : '');
+	if (t.note_tweet) body.createEl('a', { cls: 'tw-embed-more', text: 'Show more', href: url });
+	if (t.photos?.length) {
+		const grid = card.createDiv({ cls: 'tw-embed-media' });
+		grid.dataset.count = String(Math.min(t.photos.length, 4));
+		for (const ph of t.photos.slice(0, 4)) {
+			const a = grid.createEl('a', { href: url });
+			a.createEl('img', { attr: { src: ph.url + '?name=small', loading: 'lazy', alt: '' } });
+		}
+	}
+	if (t.quoted_tweet) {
+		const q = t.quoted_tweet;
+		const qurl = `https://x.com/${q.user.screen_name}/status/${q.id_str}`;
+		const quote = card.createEl('a', { cls: 'tw-embed-quote', href: qurl });
+		header(quote, q, true);
+		const qt = quote.createDiv({ cls: 'tw-embed-text' });
+		qt.innerHTML = tweetHTML(q);
+	}
+	const foot = card.createDiv({ cls: 'tw-embed-foot' });
+	const date = new Date(t.created_at);
+	foot.createSpan({
+		text: date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) + ' · ' +
+			date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+	});
+	if (t.favorite_count !== undefined) foot.createSpan({ text: `♥ ${t.favorite_count.toLocaleString('en-US')}` });
+	foot.createEl('a', { text: 'Read on X', href: url });
+}
+
+function renderTweetBlock(el: HTMLElement, source: string) {
+	const ids = source.split('\n').map(l => l.trim()).filter(Boolean);
+	const wrap = el.createDiv({ cls: 'tw-embed-thread' });
+	for (const line of ids) {
+		const m = line.match(/(?:twitter|x)\.com\/([^/]+)\/status\/(\d+)/) ?? line.match(/^(\d+)$/);
+		const card = wrap.createDiv({ cls: 'tw-embed' });
+		if (!m) {
+			card.setText(`Not a tweet link: ${line}`);
+			continue;
+		}
+		const id = m[2] ?? m[1];
+		const url = line.startsWith('http') ? line : `https://x.com/i/status/${id}`;
+		card.createEl('a', { cls: 'tw-embed-loading', text: 'Loading tweet…', href: url });
+		fetchTweet(id)
+			.then(t => renderTweet(card, t, url))
+			.catch(() => {
+				card.empty();
+				card.createEl('a', { cls: 'tw-embed-loading', text: `Couldn't load this tweet. Open it on X ↗`, href: url });
+			});
 	}
 }
