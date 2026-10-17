@@ -887,6 +887,11 @@ function header(el: HTMLElement, t: EmbedTweet, small: boolean) {
 	if (pic?.startsWith('https://pbs.twimg.com/')) {
 		const img = letter.createEl('img', { attr: { src: pic.replace('_normal.', '_bigger.'), alt: '', referrerpolicy: 'no-referrer' } });
 		img.addEventListener('error', () => img.remove());
+		// Once the photo is in, drop the letter so it can't show through.
+		img.addEventListener('load', () => {
+			for (const n of Array.from(letter.childNodes)) if (n.nodeType === Node.TEXT_NODE) n.remove();
+			letter.style.background = 'none';
+		});
 	}
 	const who = head.createDiv({ cls: 'tw-embed-who' });
 	who.createSpan({ cls: 'tw-embed-name', text: t.user.name });
