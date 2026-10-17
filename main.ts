@@ -833,7 +833,7 @@ interface EmbedTweet {
 	favorite_count?: number;
 	conversation_count?: number;
 	note_tweet?: unknown;
-	user: { name: string; screen_name: string };
+	user: { name: string; screen_name: string; profile_image_url_https?: string };
 	entities?: { urls?: { url: string; expanded_url: string; display_url: string }[]; media?: { url: string }[] };
 	photos?: { url: string; width: number; height: number }[];
 	quoted_tweet?: EmbedTweet;
@@ -876,12 +876,18 @@ function tweetHTML(t: EmbedTweet): string {
 
 function header(el: HTMLElement, t: EmbedTweet, small: boolean) {
 	const head = el.createDiv({ cls: 'tw-embed-head' });
-	// No avatar image: a letter in a circle, so nothing of theirs is downloaded.
+	// A lettered circle, with their X avatar loaded on top from X's servers when the
+	// note renders (hotlinked like the photos, never saved into the vault).
 	const letter = head.createDiv({ cls: 'tw-embed-avatar', text: (t.user.screen_name[0] ?? '?').toUpperCase() });
 	let h = 0;
 	for (const c of t.user.screen_name) h = (h * 31 + c.charCodeAt(0)) % 360;
 	letter.style.background = `hsl(${h} 45% 55%)`;
 	if (small) letter.addClass('is-small');
+	const pic = t.user.profile_image_url_https;
+	if (pic?.startsWith('https://pbs.twimg.com/')) {
+		const img = letter.createEl('img', { attr: { src: pic.replace('_normal.', '_bigger.'), alt: '', referrerpolicy: 'no-referrer' } });
+		img.addEventListener('error', () => img.remove());
+	}
 	const who = head.createDiv({ cls: 'tw-embed-who' });
 	who.createSpan({ cls: 'tw-embed-name', text: t.user.name });
 	who.createSpan({ cls: 'tw-embed-handle', text: '@' + t.user.screen_name });
